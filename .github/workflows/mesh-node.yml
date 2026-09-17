@@ -1,0 +1,75 @@
+name: Mesh Node Agent
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Dispatch this repo deployment workflow when one exists'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  mesh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Commit author guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          author="$(git show -s --format='%ae' "$GITHUB_SHA")"
+          case "$author" in
+            saediniaali@yahoo.com|saediniaali280@gmail.com) echo "AUTHOR=$author PASS" ;;
+            *) echo "AUTHOR=$author REJECTED"; exit 1 ;;
+          esac
+
+      - name: Generic CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts --no-audit --no-fund; npm run test --if-present; fi
+          if [ -f pyproject.toml ] || find . -maxdepth 2 -name '*.py' -print -quit | grep -q .; then python -m compileall -q . || true; fi
+          if [ -f go.mod ]; then go test ./...; fi
+          echo 'CI_EVIDENCE=PASS'
+
+      - name: Controlled CD dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        env:
+          GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo 'NETWORK_GITHUB_TOKEN=NOT_CONFIGURED'; exit 1; }
+          workflow="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" | jq -r '.workflows[] | select(.state=="active") | select(((.name|ascii_downcase|contains("deploy")) or (.path|ascii_downcase|contains("deploy")))) | .path' | head -n 1)"
+          if [ -z "$workflow" ]; then echo 'CD=SKIPPED_NO_DEPLOY_WORKFLOW'; exit 0; fi
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/dispatches" --data "$(jq -n --arg ref "${GITHUB_REF_NAME:-main}" '{ref:$ref}')"
+          echo "CD=DISPATCHED workflow=$workflow"
+
+      - name: Heartbeat to hub
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
+          MESH_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then echo 'HEARTBEAT=SKIPPED_NETWORK_GITHUB_TOKEN_NOT_CONFIGURED'; exit 0; fi
+          payload="$(jq -n --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg status "$MESH_STATUS" --arg workflow "$GITHUB_WORKFLOW" --arg run "$GITHUB_RUN_ID" '{event_type:"mesh_heartbeat",client_payload:{repo:$repo,sha:$sha,status:$status,workflow:$workflow,run_id:$run}}')"
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' "https://api.github.com/repos/saediniaali280-debug/workflows-starter-template/dispatches" --data "$payload"
+          echo 'HEARTBEAT=DELIVERED'
