@@ -47,8 +47,10 @@ def ledger(c,request_id,event,payload):
 def callback(payload):
     if not CALLBACK_URL: return {"sent":False,"reason":"CALLBACK_URL_NOT_CONFIGURED"}
     raw=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode()
+    ts=str(int(time.time()))
+    sig=signature(ts,raw)
     try:
-        r=urlopen(Request(CALLBACK_URL,data=raw,headers={"Content-Type":"application/json"},method="POST"),timeout=15)
+        r=urlopen(Request(CALLBACK_URL,data=raw,headers={"Content-Type":"application/json","X-ALI100-Timestamp":ts,"X-ALI100-Signature":sig},method="POST"),timeout=15)
         return {"sent":True,"status":r.status}
     except Exception as e:
         return {"sent":False,"reason":str(e)[:300]}
