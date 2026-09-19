@@ -57,9 +57,10 @@ class BrokerE2E(unittest.TestCase):
                 self.assertFalse(first["result"]["external_effect"])
                 self.assertEqual(first["result"]["receipt"], "DRY_RUN")
 
+                ts2 = str(int(time.time()))
                 req2 = Request(f"http://127.0.0.1:{port}/v1/executions", data=raw, headers={
-                    "Content-Type":"application/json","X-ALI100-Timestamp":str(int(time.time())),
-                    "X-ALI100-Signature":sign(str(int(time.time())),raw)
+                    "Content-Type":"application/json","X-ALI100-Timestamp":ts2,
+                    "X-ALI100-Signature":sign(ts2,raw)
                 }, method="POST")
                 second = json.loads(urlopen(req2, timeout=3).read())
                 self.assertTrue(second["idempotent"])
@@ -81,8 +82,10 @@ class BrokerE2E(unittest.TestCase):
 
                 self.assertTrue(CallbackHandler.received)
                 headers, callback_raw = CallbackHandler.received[-1]
-                self.assertEqual(headers["X-ali100-timestamp"], headers["X-ali100-timestamp"])
-                self.assertEqual(headers["X-ali100-signature"], sign(headers["X-ali100-timestamp"], callback_raw))
+                cb_ts = headers.get("X-ALI100-Timestamp")
+                cb_sig = headers.get("X-ALI100-Signature")
+                self.assertIsNotNone(cb_ts)
+                self.assertEqual(cb_sig, sign(cb_ts, callback_raw))
                 callback_body = json.loads(callback_raw)
                 self.assertEqual(callback_body["mode"], "DRY_RUN")
                 self.assertFalse(callback_body["result"]["external_effect"])
