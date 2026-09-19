@@ -82,8 +82,9 @@ class BrokerE2E(unittest.TestCase):
 
                 self.assertTrue(CallbackHandler.received)
                 headers, callback_raw = CallbackHandler.received[-1]
-                cb_ts = headers.get("X-ALI100-Timestamp")
-                cb_sig = headers.get("X-ALI100-Signature")
+                normalized = {str(k).lower(): v for k, v in headers.items()}
+                cb_ts = normalized.get("x-ali100-timestamp")
+                cb_sig = normalized.get("x-ali100-signature")
                 self.assertIsNotNone(cb_ts)
                 self.assertEqual(cb_sig, sign(cb_ts, callback_raw))
                 callback_body = json.loads(callback_raw)
