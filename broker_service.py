@@ -11,6 +11,7 @@ CALLBACK_URL=os.getenv("ALI100_CALLBACK_URL","")
 ADAPTER_WEBHOOK_URL=os.getenv("ALI100_ADAPTER_WEBHOOK_URL","")
 REPLAY_WINDOW=int(os.getenv("ALI100_REPLAY_WINDOW_SEC","300"))
 MAX_AMOUNT=int(os.getenv("ALI100_MAX_AMOUNT","100000000"))
+MAX_BODY_BYTES=int(os.getenv("ALI100_MAX_BODY_BYTES","1048576"))
 
 def db():
     c=sqlite3.connect(DB_PATH)
@@ -52,8 +53,8 @@ def callback(payload):
     try:
         r=urlopen(Request(CALLBACK_URL,data=raw,headers={"Content-Type":"application/json","X-ALI100-Timestamp":ts,"X-ALI100-Signature":sig},method="POST"),timeout=15)
         return {"sent":True,"status":r.status}
-    except Exception as e:
-        return {"sent":False,"reason":str(e)[:300]}
+    except Exception:
+        return {"sent":False,"reason":"callback_failed"}
 
 def adapter(request_body):
     adapter_name=request_body.get("adapter","webhook")
@@ -91,8 +92,8 @@ def execute(body):
         result=adapter(body)
         status="COMPLETED" if result.get("executed") or MODE=="DRY_RUN" else "SUBMITTED"
         ledger(c,rid,"ADAPTER_RESULT",result)
-    except Exception as e:
-        result={"executed":False,"external_effect":False,"error":str(e)[:500]}
+    except Exception:
+        result={"executed":False,"external_effect":False,"error":"adapter_execution_failed"}
         status="FAILED"; ledger(c,rid,"ADAPTER_FAILED",result)
     c.execute("UPDATE executions SET status=?,response_json=?,updated_at=? WHERE request_id=?",
               (status,json.dumps(result,ensure_ascii=False),int(time.time()),rid)); c.commit()
@@ -109,8 +110,18 @@ class Handler(BaseHTTPRequestHandler):
         else: self.send_json(404,{"error":"not_found"})
     def do_POST(self):
         if self.path!="/v1/executions": self.send_json(404,{"error":"not_found"}); return
-        n=int(self.headers.get("Content-Length","0"))
+        self.connection.settimeout(10)
+        try:
+            n=int(self.headers.get("Content-Length","0"))
+        except (TypeError,ValueError):
+            self.send_json(400,{"ok":False,"error":"invalid_content_length"}); return
+        if n <= 0:
+            self.send_json(400,{"ok":False,"error":"empty_request_body"}); return
+        if n > MAX_BODY_BYTES:
+            self.send_json(413,{"ok":False,"error":"request_body_too_large"}); return
         raw=self.rfile.read(n)
+        if len(raw) != n:
+            self.send_json(400,{"ok":False,"error":"incomplete_request_body"}); return
         if not verify_signature(self.headers.get("X-ALI100-Timestamp",""),self.headers.get("X-ALI100-Signature",""),raw):
             self.send_json(401,{"ok":False,"error":"invalid_signature"}); return
         try:
@@ -119,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200 if result["ok"] else 409,result)
         except PermissionError as e: self.send_json(403,{"ok":False,"error":str(e)})
         except (ValueError,json.JSONDecodeError) as e: self.send_json(400,{"ok":False,"error":str(e)})
-        except Exception as e: self.send_json(500,{"ok":False,"error":str(e)[:500]})
+        except Exception: self.send_json(500,{"ok":False,"error":"internal_error"})
     def log_message(self,*args): return
 
 if __name__=="__main__":
