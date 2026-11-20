@@ -81,12 +81,22 @@ def execute(body):
     if MODE=="LIVE" and body.get("approved_by_owner") is not True: raise PermissionError("LIVE execution requires owner approval")
     if MODE=="LIVE_READY": raise PermissionError("LIVE_READY is validation-only; explicit LIVE mode is required")
     c=db()
-    prior=c.execute("SELECT request_id,status,response_json FROM executions WHERE idempotency_key=?",(idem,)).fetchone()
+    request_json=json.dumps(body,ensure_ascii=False)
+    def prior_result(row):
+        if canonical(json.loads(row[3])) != canonical(body):
+            return {"ok":False,"idempotent":True,"error":"idempotency_key_conflict","request_id":row[0],"status":row[1]}
+        return {"ok":row[1]=="COMPLETED","idempotent":True,"request_id":row[0],"status":row[1],"response":json.loads(row[2]) if row[2] else None}
+    prior=c.execute("SELECT request_id,status,response_json,request_json FROM executions WHERE idempotency_key=?",(idem,)).fetchone()
     if prior:
-        return {"ok":True,"idempotent":True,"request_id":prior[0],"status":prior[1],"response":json.loads(prior[2]) if prior[2] else None}
+        return prior_result(prior)
     now=int(time.time())
-    c.execute("INSERT INTO executions(request_id,idempotency_key,deal_id,mode,status,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-              (rid,idem,deal,MODE,"RISK_PENDING",json.dumps(body,ensure_ascii=False),now,now))
+    c.execute("INSERT OR IGNORE INTO executions(request_id,idempotency_key,deal_id,mode,status,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+              (rid,idem,deal,MODE, "RISK_PENDING",request_json,now,now))
+    if c.execute("SELECT changes()").fetchone()[0] != 1:
+        prior=c.execute("SELECT request_id,status,response_json,request_json FROM executions WHERE idempotency_key=?",(idem,)).fetchone()
+        if prior:
+            return prior_result(prior)
+        return {"ok":False,"error":"execution_claim_conflict","status":"UNCONFIRMED"}
     c.commit(); ledger(c,rid,"REQUEST_ACCEPTED",{"mode":MODE,"deal_id":deal})
     try:
         result=adapter(body)
